@@ -36,9 +36,8 @@ from langchain_community.vectorstores import FAISS
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 # LangChain RAG chain + prompt
-from langchain.chains import create_retrieval_chain
-from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import PromptTemplate
+from langchain_core.output_parsers import StrOutputParser
 
 
 # ─────────────────────────────────────────────────────────────
@@ -463,10 +462,33 @@ ANSWER:"""
         max_output_tokens=1024,
     )
 
-    # "stuff" chain type = all retrieved chunks stuffed into one prompt call
-    combine_docs_chain = create_stuff_documents_chain(llm, PROMPT)
-    chain = create_retrieval_chain(retriever, combine_docs_chain)
-    return chain
+    # Build a lightweight RAG chain using only langchain_core primitives.
+    # This avoids importing from langchain.chains which no longer exists in v1.x.
+    class _RAGChain:
+        """Minimal retrieval-augmented generation chain."""
+
+        def __init__(self, retriever, prompt, llm):
+            self.retriever = retriever
+            self.prompt = prompt
+            self.llm = llm
+
+        def invoke(self, input_dict: dict) -> dict:
+            question = input_dict.get("input", "")
+            # 1. Retrieve relevant document chunks
+            docs = self.retriever.invoke(question)
+            # 2. Combine ("stuff") all chunks into a single context string
+            context = "\n\n".join(doc.page_content for doc in docs)
+            # 3. Format the prompt
+            formatted = self.prompt.format(context=context, input=question)
+            # 4. Call the LLM
+            response = self.llm.invoke(formatted)
+            # 5. Return answer + source documents in the shape the UI expects
+            return {
+                "answer": response.content if hasattr(response, "content") else str(response),
+                "context": docs,
+            }
+
+    return _RAGChain(retriever, PROMPT, llm)
 
 
 # ─────────────────────────────────────────────────────────────
